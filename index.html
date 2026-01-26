@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title> 堆雪人 - H5纯净版 </title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: linear-gradient(to bottom, #87CEEB, #E0F7FA);
+            font-family: 'Microsoft YaHei', sans-serif;
+            touch-action: none;
+        }
+        #gameCanvas {
+            display: block;
+            margin: 0 auto;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        .score-board {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #333;
+            font-size: 24px;
+            font-weight: bold;
+            background: rgba(255, 255, 255, 0.7);
+            padding: 10px 20px;
+            border-radius: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        .lives {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            gap: 5px;
+        }
+        .heart {
+            width: 30px;
+            height: 30px;
+            background: #ff4444;
+            border-radius: 50%;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+        .game-over {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 255, 255, 0.95);
+            padding: 40px;
+            border-radius: 20px;
+            text-align: center;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+            pointer-events: auto;
+            min-width: 280px;
+        }
+        .game-over h2 {
+            margin: 0 0 20px;
+            color: #333;
+            font-size: 32px;
+        }
+        .game-over p {
+            font-size: 18px;
+            color: #666;
+            margin-bottom: 30px;
+        }
+        .btn {
+            background: #4FC3F7;
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 20px;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: transform 0.1s, background 0.2s;
+            box-shadow: 0 4px 0 #29B6F6;
+        }
+        .btn:active {
+            transform: translateY(4px);
+            box-shadow: none;
+        }
+        
+        /* Tutorial overlay */
+        .tutorial {
+            position: absolute;
+            bottom: 100px;
+            width: 100%;
+            text-align: center;
+            color: rgba(0,0,0,0.5);
+            font-size: 18px;
+            animation: fadeOut 3s forwards;
+            animation-delay: 2s;
+        }
+        @keyframes fadeOut {
+            to { opacity: 0; }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    
+    <div id="ui-layer">
+        <div class="score-board">
+            得分: <span id="scoreVal">0</span>
+        </div>
+        <div class="lives" id="livesContainer">
+            <!-- Hearts injected by JS -->
+        </div>
+        
+        <div class="tutorial">
+            左右滑动控制雪人接取部件
+        </div>
+
+        <div id="gameOver" class="game-over">
+            <h2>游戏结束</h2>
+            <p>最终得分: <span id="finalScore">0</span></p>
+            <button class="btn" onclick="resetGame()">再堆一次</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Game State
+        let state = {
+            score: 0,
+            lives: 3,
+            isGameOver: false,
+            width: 0,
+            height: 0
+        };
+
+        // Player (Snowman Base)
+        let player = {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 80,
+            targetX: 0,
+            velocity: 0,
+            stackHeight: 0 // How many parts collected (visual only)
+        };
+
+        // Falling Objects
+        let objects = [];
+        let spawnTimer = 0;
+        let spawnInterval = 60; // Frames
+        let difficultyMultiplier = 1;
+
+        // Assets definitions (Simple Shapes)
+        const OBJECT_TYPES = {
+            SNOWBALL: { type: 'good', score: 10, color: '#FFFFFF', radius: 25 },
+            HEAD: { type: 'good', score: 20, color: '#f0f0f0', radius: 20, isHead: true }, // Special visual
+            GIFT: { type: 'bonus', score: 50, color: '#FFD700', radius: 15 },
+            BOMB: { type: 'bad', damage: 1, color: '#333333', text: '×', radius: 25 }
+        };
+
+        function resize() {
+            state.width = window.innerWidth;
+            state.height = window.innerHeight;
+            canvas.width = state.width;
+            canvas.height = state.height;
+            
+            player.y = state.height - 100;
+            // Keep x bounded if resized
+            if (player.x > state.width) player.x = state.width - player.width/2;
+            if (player.x < 0) player.x = player.width/2;
+        }
+        window.addEventListener('resize', resize);
+        
+        // Input Handling
+        let isTouching = false;
+        
+        function handleInput(x) {
+            if (state.isGameOver) return;
+            // Clamp
+            player.targetX = Math.max(player.width/2, Math.min(state.width - player.width/2, x));
+        }
+
+        // Mouse
+        window.addEventListener('mousemove', e => handleInput(e.clientX));
+        
+        // Touch
+        window.addEventListener('touchstart', e => {
+            isTouching = true;
+            handleInput(e.touches[0].clientX);
+        }, {passive: false});
+        
+        window.addEventListener('touchmove', e => {
+            e.preventDefault(); // Prevent scroll
+            if (isTouching) handleInput(e.touches[0].clientX);
+        }, {passive: false});
+        
+        window.addEventListener('touchend', () => isTouching = false);
+
+        function init() {
+            resize();
+            state.score = 0;
+            state.lives = 3;
+            state.isGameOver = false;
+            difficultyMultiplier = 1;
+            spawnInterval = 60;
+            objects = [];
+            player.x = state.width / 2;
+            player.targetX = state.width / 2;
+            player.stackHeight = 0;
+            
+            updateUI();
+            document.getElementById('gameOver').style.display = 'none';
+        }
+
+        function spawnObject() {
+            const types = ['SNOWBALL', 'SNOWBALL', 'SNOWBALL', 'BOMB', 'BOMB'];
+            if (Math.random() < 0.1) types.push('GIFT');
+            if (Math.random() < 0.2) types.push('HEAD');
+            
+            const typeKey = types[Math.floor(Math.random() * types.length)];
+            const template = OBJECT_TYPES[typeKey];
+            
+            const obj = {
+                x: Math.random() * (state.width - 60) + 30,
+                y: -50,
+                speed: (Math.random() * 3 + 2) * difficultyMultiplier,
+                ...template
+            };
+            
+            objects.push(obj);
+        }
+
+        function update() {
+            if (state.isGameOver) return;
+
+            // Smooth Movement
+            player.x += (player.targetX - player.x) * 0.15;
+
+            // Spawning
+            spawnTimer++;
+            if (spawnTimer > spawnInterval) {
+                spawnObject();
+                spawnTimer = 0;
+                // Increase difficulty
+                if (spawnInterval > 20) spawnInterval -= 0.5;
+                difficultyMultiplier += 0.001;
+            }
+
+            // Update Objects
+            for (let i = objects.length - 1; i >= 0; i--) {
+                let obj = objects[i];
+                obj.y += obj.speed;
+
+                // Collision
+                const dx = player.x - obj.x;
+                const dy = (player.y - 40) - obj.y; // approximate center height of player base
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                
+                // Hitbox radius sum approx (player 40 + obj radius)
+                if (dist < 40 + obj.radius) {
+                    // Collected
+                    handleCollision(obj);
+                    objects.splice(i, 1);
+                    continue;
+                }
+
+                // Out of bounds
+                if (obj.y > state.height) {
+                    objects.splice(i, 1);
+                }
+            }
+        }
+
+        function handleCollision(obj) {
+            if (state.isGameOver) return;
+
+            if (obj.type === 'good' || obj.type === 'bonus') {
+                state.score += obj.score;
+                // Visual effect?
+                if (obj.isHead) {
+                    // Maybe nice effect
+                }
+            } else if (obj.type === 'bad') {
+                state.lives--;
+                // Shake effect (simple visual cue needed?)
+                canvas.style.transform = 'translate(5px, 0)';
+                setTimeout(() => canvas.style.transform = 'none', 50);
+            }
+
+            updateUI();
+            
+            if (state.lives <= 0) {
+                state.isGameOver = true;
+                setTimeout(showGameOver, 100);
+            }
+        }
+
+        function showGameOver() {
+            document.getElementById('finalScore').innerText = state.score;
+            document.getElementById('gameOver').style.display = 'block';
+        }
+
+        function updateUI() {
+            document.getElementById('scoreVal').innerText = state.score;
+            
+            const livesContainer = document.getElementById('livesContainer');
+            livesContainer.innerHTML = '';
+            for(let i=0; i<state.lives; i++) {
+                const heart = document.createElement('div');
+                heart.className = 'heart';
+                livesContainer.appendChild(heart);
+            }
+        }
+
+        function drawSnowmanBody(x, y, scale = 1) {
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.scale(scale, scale);
+            
+            // Shadow
+            ctx.fillStyle = 'rgba(0,0,0,0.1)';
+            ctx.beginPath();
+            ctx.ellipse(0, 40, 40, 10, 0, 0, Math.PI*2);
+            ctx.fill();
+
+            // Bottom Ball
+            const grad = ctx.createRadialGradient(-10, -10, 5, 0, 0, 40);
+            grad.addColorStop(0, '#fff');
+            grad.addColorStop(1, '#e3f2fd');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(0, 0, 40, 0, Math.PI*2);
+            ctx.fill();
+            
+            // Middle
+            ctx.beginPath();
+            ctx.arc(0, -50, 30, 0, Math.PI*2);
+            ctx.fill();
+
+            // Head (if we want a full snowman player, or just a basket?)
+            // Let's make the player a "Snowman with a basket" or just a Snowman catching things.
+            // The prompt says "Catch correct parts to build snowman".
+            // Let's just draw the Snowman as the catcher.
+            
+            // Head
+            ctx.beginPath();
+            ctx.arc(0, -90, 20, 0, Math.PI*2);
+            ctx.fill();
+
+            // Eyes
+            ctx.fillStyle = '#333';
+            ctx.beginPath();
+            ctx.arc(-7, -95, 3, 0, Math.PI*2);
+            ctx.arc(7, -95, 3, 0, Math.PI*2);
+            ctx.fill();
+
+            // Nose
+            ctx.fillStyle = 'orange';
+            ctx.beginPath();
+            ctx.moveTo(0, -90);
+            ctx.lineTo(15, -85);
+            ctx.lineTo(0, -80);
+            ctx.fill();
+            
+            // Scarf
+            ctx.strokeStyle = '#f44336';
+            ctx.lineWidth = 6;
+            ctx.beginPath();
+            ctx.moveTo(-15, -70);
+            ctx.quadraticCurveTo(0, -60, 15, -70);
+            ctx.stroke();
+
+            // Arms (Open to catch)
+            ctx.strokeStyle = '#795548';
+            ctx.lineWidth = 4;
+            
+            // Left Arm
+            ctx.beginPath();
+            ctx.moveTo(-25, -50);
+            ctx.lineTo(-50, -70);
+            ctx.stroke();
+
+            // Right Arm
+            ctx.beginPath();
+            ctx.moveTo(25, -50);
+            ctx.lineTo(50, -70);
+            ctx.stroke();
+
+            ctx.restore();
+        }
+
+        function drawObject(obj) {
+            ctx.save();
+            ctx.translate(obj.x, obj.y);
+            
+            if (obj.text) {
+                // Bomb / Bad
+                ctx.fillStyle = obj.color;
+                ctx.beginPath();
+                ctx.arc(0, 0, obj.radius, 0, Math.PI*2);
+                ctx.fill();
+                
+                ctx.fillStyle = 'white';
+                ctx.font = 'bold 30px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(obj.text, 0, 2);
+            } else if (obj.type === 'bonus') {
+                // Gift box
+                ctx.fillStyle = obj.color;
+                ctx.fillRect(-15, -15, 30, 30);
+                
+                ctx.fillStyle = 'red';
+                ctx.fillRect(-5, -15, 10, 30);
+                ctx.fillRect(-15, -5, 30, 10);
+            } else {
+                // Snowball / Head
+                const grad = ctx.createRadialGradient(-5, -5, 2, 0, 0, obj.radius);
+                grad.addColorStop(0, '#fff');
+                grad.addColorStop(1, '#e3f2fd');
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.arc(0, 0, obj.radius, 0, Math.PI*2);
+                ctx.fill();
+
+                if (obj.isHead) {
+                    // Draw a face on the falling head
+                    ctx.fillStyle = '#333';
+                    ctx.beginPath();
+                    ctx.arc(-6, -5, 2, 0, Math.PI*2); // Eye
+                    ctx.arc(6, -5, 2, 0, Math.PI*2); // Eye
+                    ctx.fill();
+                    ctx.fillStyle = 'orange';
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.lineTo(3, 8); // Nose down?
+                    ctx.lineTo(-3, 8); 
+                    ctx.fill();
+                }
+            }
+
+            ctx.restore();
+        }
+
+        function draw() {
+            // Background Clear
+            ctx.clearRect(0, 0, state.width, state.height);
+            
+            // Draw Ground
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(0, state.height - 20, state.width, 20);
+
+            // Draw Snow (Background particles - Static for now or simple animation)
+            // Optional: Add simple falling snow effect if performance allows, keeping it simple for now.
+
+            // Draw Player
+            drawSnowmanBody(player.x, player.y);
+
+            // Draw Objects
+            objects.forEach(drawObject);
+        }
+
+        function loop() {
+            update();
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        window.resetGame = init;
+        
+        // Start
+        init();
+        loop();
+
+    </script>
+</body>
+</html>
